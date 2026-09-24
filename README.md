@@ -4,7 +4,9 @@ This is a small local implementation inspired by TypeSafe Jev. It lets a user su
 
 - `choice`: `choice`
 - `score`: `score`, `legend`
-- `true/false`: `noul`
+- `true/false`: `true` or `false`
+
+Inspiration: [Introducing System One Models and Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev).
 
 It uses OpenAI `gpt-5-mini` by default, but the model is isolated behind `llm.py` so you can use any LLM provider.
 
@@ -86,7 +88,7 @@ The browser sends:
   "explanationMode": true,
   "questions": {
     "refund_requested": {
-      "type": "noul",
+      "type": "true/false",
       "instructions": "Does `ticket_message` request a refund?"
     },
     "department": {
