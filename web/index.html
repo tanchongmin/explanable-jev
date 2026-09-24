@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jev-style typed evaluator</title>
+    <link rel="stylesheet" href="/styles.css?v=2" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="toolbar">
+        <div>
+          <h1>Jev-style typed evaluator</h1>
+          <p>Constrain model judgments to Choice, Score, and True/False outputs.</p>
+        </div>
+        <div class="actions">
+          <label class="toggle">
+            <input id="explanationMode" type="checkbox" checked />
+            <span>Explanation mode</span>
+          </label>
+          <button id="loadExample" type="button">Load example</button>
+          <button id="run" type="button">Evaluate</button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="panel input-panel">
+          <div class="panel-title">
+            <div class="title-help">
+              <h2>State</h2>
+              <span class="help" tabindex="0" aria-label="State help">?
+                <span class="tooltip">State is the shared context every question sees. Add key-value fields like ticket_message, policy, or account_tier.</span>
+              </span>
+            </div>
+            <button id="addStateRow" type="button">Add field</button>
+          </div>
+          <div id="stateRows" class="state-table"></div>
+
+          <div class="panel-title question-title">
+            <div class="title-help">
+              <h2>Questions</h2>
+              <span class="help" tabindex="0" aria-label="Questions help">?
+                <span class="tooltip">Questions are independent typed judgments run against the same state. Add one or more, then evaluate them together.</span>
+              </span>
+            </div>
+            <div class="question-buttons">
+              <span class="action-help">
+                <button data-add="choice" type="button">+ Choice</button>
+                <span class="help" tabindex="0" aria-label="Choice help">?
+                  <span class="tooltip">Choice returns exactly one option key from the options you provide.</span>
+                </span>
+              </span>
+              <span class="action-help">
+                <button data-add="score" type="button">+ Score</button>
+                <span class="help" tabindex="0" aria-label="Score help">?
+                  <span class="tooltip">Score returns a number on your ordered rubric, starting at 0 for the first level.</span>
+                </span>
+              </span>
+              <span class="action-help">
+                <button data-add="noul" type="button">+ True/False</button>
+                <span class="help" tabindex="0" aria-label="True/False help">?
+                  <span class="tooltip">True/False returns true or false for a yes/no judgment.</span>
+                </span>
+              </span>
+            </div>
+          </div>
+          <div id="questions"></div>
+        </div>
+
+        <div class="panel output-panel">
+          <div class="panel-title">
+            <div class="title-help">
+              <h2>Answers</h2>
+              <span class="help" tabindex="0" aria-label="Answers help">?
+                <span class="tooltip">Answers show the interpreted result for each question. The raw JSON panel shows only question-to-answer output.</span>
+              </span>
+            </div>
+            <span id="status"></span>
+          </div>
+          <div id="answers" class="answers empty">No results yet.</div>
+          <details class="raw">
+            <summary>Raw JSON</summary>
+            <pre id="rawJson">{}</pre>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <template id="questionTemplate">
+      <article class="question">
+        <div class="question-head">
+          <input class="qid" />
+          <select class="qtype">
+            <option value="choice">Choice</option>
+            <option value="score">Score</option>
+            <option value="noul">True/False</option>
+          </select>
+          <span class="help question-type-help" tabindex="0" aria-label="Category help">?</span>
+          <button class="describe" type="button">Auto describe</button>
+          <button class="remove" type="button">Remove</button>
+        </div>
+        <label>
+          <span>Question</span>
+          <textarea class="instructions" spellcheck="false"></textarea>
+        </label>
+        <div class="criteria"></div>
+      </article>
+    </template>
+
+    <script src="/app.js?v=2"></script>
+  </body>
+</html>
