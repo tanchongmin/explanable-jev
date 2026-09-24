@@ -52,7 +52,7 @@ The initial LLM prompt is intentionally short:
 
 The LLM is not asked for probability distributions, and the API does not return probability or confidence fields.
 
-The LLM is also not asked to return JSON. The server first tries to interpret a plain answer like `billing`, `1.5`, or `0.82`. If interpretation fails, it retries with another plain-answer prompt instead of requesting JSON.
+The LLM is also not asked to return JSON. The server first tries to interpret a plain answer like `a`, `1`, or `t`. If interpretation fails, it retries with another plain-answer prompt instead of requesting JSON.
 
 Evaluation prompts are compact plain text, not JSON. For example:
 
@@ -78,7 +78,7 @@ For questions, enter the question you want answered and the option keys or score
 
 ## Request Shape
 
-The browser sends:
+The browser builds a request from the key-value state table and the question cards. Conceptually, it sends:
 
 ```json
 {
@@ -109,11 +109,34 @@ The browser sends:
 }
 ```
 
-With explanation mode enabled, every answer also includes:
+The UI labels the boolean question type as `true/false`.
+
+With explanation mode enabled, every displayed answer also includes:
 
 ```json
 {
   "explanation": "Short reason for the judgment."
+}
+```
+
+The Raw JSON panel in the UI shows only a compact question-to-answer object. It omits model name, elapsed time, parallelism, prompt metadata, types, and options:
+
+```json
+{
+  "refund_requested": true,
+  "department": "billing",
+  "frustration": 1
+}
+```
+
+When explanation mode is enabled, each value becomes an object:
+
+```json
+{
+  "department": {
+    "answer": "billing",
+    "explanation": "duplicate charge and refund issue"
+  }
 }
 ```
 
@@ -128,9 +151,9 @@ returns: Exchanges, wrong sizes, damaged items, and returns.
 
 The server parses those lines and writes them back into the criteria fields.
 
-## Speed and Parallelism
+## Evaluation
 
-Each question is evaluated independently in a `ThreadPoolExecutor`. `parallelism` in the API response is the number of question workers used for that request. Each question is exactly one LLM call; parallelism only lets several different questions run at the same time.
+Each question is evaluated independently. Each question is exactly one LLM call, and separate questions can run at the same time.
 
 The server then normalizes outputs in code:
 
