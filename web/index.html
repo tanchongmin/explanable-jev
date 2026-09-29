@@ -97,7 +97,7 @@
             <div class="title-help">
               <h2>Answers</h2>
               <span class="help" tabindex="0" aria-label="Answers help">?
-                <span class="tooltip">Answers show interpreted results for each question. Input JSON is the request built from the current editor. Output JSON is the compact question-to-answer result after evaluation.</span>
+                <span class="tooltip">Answers show interpreted results for each question. State and Questions JSON are Jev-compatible decide request parts. Output JSON is Jev-style answers with explanations added.</span>
               </span>
             </div>
             <span id="status"></span>
@@ -106,15 +106,27 @@
           <div class="json-panels">
             <section class="json-panel" data-json-panel>
               <div class="json-head">
-                <h3>Input JSON</h3>
-                <button class="copy-json" type="button" data-copy="inputJson" aria-label="Copy Input JSON" title="Copy Input JSON">
+                <h3>State JSON</h3>
+                <button class="copy-json" type="button" data-copy="stateJson" aria-label="Copy State JSON" title="Copy State JSON">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <rect x="9" y="9" width="11" height="11" rx="2"></rect>
                     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                   </svg>
                 </button>
               </div>
-              <pre id="inputJson">{}</pre>
+              <pre id="stateJson">{}</pre>
+            </section>
+            <section class="json-panel" data-json-panel>
+              <div class="json-head">
+                <h3>Questions JSON</h3>
+                <button class="copy-json" type="button" data-copy="questionsJson" aria-label="Copy Questions JSON" title="Copy Questions JSON">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
+              <pre id="questionsJson">{}</pre>
             </section>
             <section class="json-panel" data-json-panel>
               <div class="json-head">

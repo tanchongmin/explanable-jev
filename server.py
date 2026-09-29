@@ -273,9 +273,12 @@ def build_answer(question: dict[str, Any], raw: dict[str, Any], explanation_mode
         raw_choice = str(raw.get("choice", "")).strip()
         choice = token_map.get(raw_choice.lower(), raw_choice)
         choice = choice if choice in options else options[0]
+        probabilities = {option: 1 if option == choice else 0 for option in options}
         answer: dict[str, Any] = {
             "type": "choice",
             "choice": choice,
+            "confidence": 1,
+            "probabilities": probabilities,
         }
     elif q_type == "score":
         try:
@@ -283,9 +286,12 @@ def build_answer(question: dict[str, Any], raw: dict[str, Any], explanation_mode
         except (TypeError, ValueError):
             score = 0.0
         score = max(0.0, min(float(len(question["criteria"]) - 1), score))
+        probability_key = str(round(score))
         answer = {
             "type": "score",
             "score": round(score, 4),
+            "confidence": 1,
+            "probabilities": {probability_key: 1},
             "legend": {str(index): value for index, value in enumerate(question["criteria"])},
         }
     else:
@@ -296,7 +302,7 @@ def build_answer(question: dict[str, Any], raw: dict[str, Any], explanation_mode
             bool_value = value >= 0.5
         else:
             bool_value = str(value).strip().lower() in {"true", "yes", "1"}
-        answer = {"type": "true/false", "true/false": bool_value}
+        answer = {"type": "noul", "noul": 1 if bool_value else 0}
 
     if explanation_mode:
         explanation = raw.get("explanation")
@@ -312,10 +318,6 @@ def evaluate_question(
     raw_output = llm(system_prompt, user_prompt)
     raw = interpret_llm_output(raw_output, state, question_id, question, explanation_mode)
     answer = build_answer(question, raw, explanation_mode)
-    answer["prompt"] = {
-        "system": system_prompt,
-        "user": user_prompt,
-    }
     return question_id, answer
 
 
@@ -347,9 +349,12 @@ def evaluate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "model": os.environ.get("OPENAI_MODEL", "gpt-5-mini"),
-        "parallelism": max_workers,
-        "elapsed_ms": round((time.perf_counter() - started) * 1000),
         "answers": {question_id: answers[question_id] for question_id in validated},
+        "usage": {
+            "input_tokens": 0,
+            "cost_usd": 0,
+            "credits_remaining_usd": 0,
+        },
     }
 
 
@@ -488,7 +493,37 @@ def validate_generated_state_keys(state: Any) -> dict[str, Any]:
                 f"Generated state key '{key}' is not allowed. Use a more specific state key."
             )
     validate_text_json(state)
+    validate_generated_state_values(state)
     return state
+
+
+def validate_generated_state_values(value: Any, path: str = "state") -> None:
+    placeholder_patterns = [
+        r"\bpaste\b.*\bhere\b",
+        r"\benter\b.*\bhere\b",
+        r"\badd\b.*\bhere\b",
+        r"\bfill\b.*\bhere\b",
+        r"\bplaceholder\b",
+        r"\bsample text\b",
+        r"\blorem ipsum\b",
+        r"^\s*(tbd|n/a|todo|example)\s*$",
+    ]
+    if isinstance(value, str):
+        if not value.strip():
+            raise ValidationError(f"Generated {path} must not be empty.")
+        normalized = value.strip().lower()
+        if any(re.search(pattern, normalized) for pattern in placeholder_patterns):
+            raise ValidationError(
+                f"Generated {path} must be a specific sample value, not a placeholder."
+            )
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            validate_generated_state_values(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            validate_generated_state_values(item, f"{path}.{key}")
 
 
 def instruction_mentions_state_key(instructions: Any, state_keys: list[str]) -> bool:
@@ -499,8 +534,14 @@ def instruction_mentions_state_key(instructions: Any, state_keys: list[str]) -> 
     )
 
 
+def backticked_variables(instructions: Any) -> set[str]:
+    instruction_text = json.dumps(instructions, ensure_ascii=False) if not isinstance(instructions, str) else instructions
+    return set(re.findall(r"`([A-Za-z][A-Za-z0-9_-]*)`", instruction_text))
+
+
 def validate_generated_questions(questions: Any, state: dict[str, Any]) -> dict[str, Any]:
     state_keys = list(state.keys())
+    state_key_set = set(state_keys)
     validated = {
         question_id: validate_question(question_id, question)
         for question_id, question in normalize_generated_questions(questions).items()
@@ -508,6 +549,12 @@ def validate_generated_questions(questions: Any, state: dict[str, Any]) -> dict[
     if not validated:
         raise ValidationError("Generated setup needs at least one question.")
     for question_id, question in validated.items():
+        unknown_variables = sorted(backticked_variables(question.get("instructions", "")) - state_key_set)
+        if unknown_variables:
+            raise ValidationError(
+                f"Generated question '{question_id}' refers to unknown variable(s): {', '.join(unknown_variables)}. "
+                f"Use only state keys: {', '.join(state_keys)}."
+            )
         if not instruction_mentions_state_key(question.get("instructions", ""), state_keys):
             raise ValidationError(
                 f"Generated question '{question_id}' must refer to at least one state key: {', '.join(state_keys)}."
@@ -531,7 +578,9 @@ def generation_repair_prompt(original_user_prompt: str, raw_output: str, error: 
             "requirements": [
                 "Return one JSON object with state and questions.",
                 "state keys must not be input_text or input.",
+                "state values must be specific sample content, not placeholders like 'paste here', 'enter here', or 'TBD'.",
                 "Each question instruction must explicitly refer to at least one returned state key.",
+                "Question instructions must not refer to variables outside the returned state keys.",
                 "choice criteria must be an object with at least 2 options.",
                 "score criteria must be a JSON array with 2 to 10 ordered string levels; never return a single score level.",
                 "true/false criteria may contain true and false descriptions.",
@@ -571,12 +620,15 @@ def generate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     system_prompt = (
         "Design a typed evaluator setup for a small UI. Return JSON only. "
+        "Generate a brand-new setup from the user's description; do not reuse any existing state or questions. "
         "The JSON object must contain state and questions. "
-        "state must be an object of editable string fields with realistic placeholder values. "
+        "state must be an object of editable string fields with specific, realistic sample values. "
+        "Do not use placeholder state values such as 'Paste here', 'Enter text here', 'TBD', or generic filler. "
         "Use state keys such as ticket_message, refund_policy, loan_application, or patient_note. "
         "Do not use input_text or input as state keys. "
         "questions must be an object keyed by concise snake_case ids. "
         "Every question instruction must explicitly refer to at least one state key, preferably in backticks. "
+        "If an instruction uses a backticked variable, it must exactly match a key in state; do not invent variables outside state. "
         "Each question must use type choice, score, or true/false. "
         "Choice criteria must be an object with 2 to 6 option keys and short descriptions. "
         "Score criteria must be a JSON array with 2 to 6 ordered level descriptions; never create a score question with only one level. "
@@ -586,35 +638,7 @@ def generate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     user_prompt = json.dumps(
         {
             "description": description.strip(),
-            "example_shape": {
-                "state": {
-                    "customer_ticket": "Paste the customer ticket to evaluate here.",
-                    "refund_policy": "Paste the relevant refund policy here.",
-                },
-                "questions": {
-                    "support_category": {
-                        "type": "choice",
-                        "instructions": "Which category best fits `customer_ticket`?",
-                        "criteria": {
-                            "billing": "Payments, invoices, refunds, or charges.",
-                            "technical": "Bugs, errors, outages, or integrations.",
-                        },
-                    },
-                    "urgency": {
-                        "type": "score",
-                        "instructions": "How urgent is `customer_ticket`?",
-                        "criteria": ["Low urgency.", "Moderate urgency.", "High urgency."],
-                    },
-                    "refund_policy_match": {
-                        "type": "true/false",
-                        "instructions": "Does `customer_ticket` satisfy `refund_policy`?",
-                        "criteria": {
-                            "true": "The state matches the policy.",
-                            "false": "The state does not match the policy.",
-                        },
-                    },
-                },
-            },
+            "output_contract": "Return only JSON with top-level state and questions.",
         },
         ensure_ascii=False,
     )
@@ -648,6 +672,7 @@ def refine_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "Use state keys such as ticket_message, refund_policy, loan_application, or patient_note; replace input_text or input. "
         "questions must be an object keyed by concise snake_case ids. "
         "Every question instruction must explicitly refer to at least one returned state key, preferably in backticks. "
+        "If an instruction uses a backticked variable, it must exactly match a returned state key; do not invent variables outside state. "
         "Each question must use type choice, score, or true/false. "
         "Choice criteria must be an object with 2 to 8 option keys and short descriptions. "
         "Score criteria must be a JSON array with 2 to 8 ordered level descriptions; never create a score question with only one level. "

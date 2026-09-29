@@ -3,7 +3,8 @@ const template = document.querySelector("#questionTemplate");
 const stateRows = document.querySelector("#stateRows");
 const statusEl = document.querySelector("#status");
 const answersEl = document.querySelector("#answers");
-const inputJson = document.querySelector("#inputJson");
+const stateJson = document.querySelector("#stateJson");
+const questionsJson = document.querySelector("#questionsJson");
 const outputJson = document.querySelector("#outputJson");
 const explanationMode = document.querySelector("#explanationMode");
 const assistPanel = document.querySelector("#assistPanel");
@@ -70,13 +71,13 @@ function addStateRow(key = "", value = "") {
   const valueField = row.querySelector(".state-value");
   valueField.value = value;
   wireAutoResize(valueField);
-  row.addEventListener("input", updateInputJson);
+  row.addEventListener("input", updateRequestJson);
   row.querySelector("button").addEventListener("click", () => {
     row.remove();
-    updateInputJson();
+    updateRequestJson();
   });
   stateRows.appendChild(row);
-  updateInputJson();
+  updateRequestJson();
 }
 
 function addQuestion(type = "choice", data = {}) {
@@ -96,18 +97,18 @@ function addQuestion(type = "choice", data = {}) {
     node.dataset.type = qtype.value;
     updateTypeHelp(typeHelp, qtype.value);
     renderCriteria(node, qtype.value, {});
-    updateInputJson();
+    updateRequestJson();
   });
-  node.addEventListener("input", updateInputJson);
+  node.addEventListener("input", updateRequestJson);
   node.querySelector(".remove").addEventListener("click", () => {
     node.remove();
-    updateInputJson();
+    updateRequestJson();
   });
   node.querySelector(".describe").addEventListener("click", () => autoDescribe(node));
 
   questionsEl.appendChild(node);
   renderCriteria(node, qtype.value, data.criteria);
-  updateInputJson();
+  updateRequestJson();
 }
 
 function updateTypeHelp(help, type) {
@@ -172,11 +173,11 @@ function addChoiceRow(host, key, value, fixedKey = false) {
   wireAutoResize(valueField);
   row.querySelector("button").addEventListener("click", () => {
     row.remove();
-    updateInputJson();
+    updateRequestJson();
   });
   host.insertBefore(row, host.querySelector(".mini-add"));
-  row.addEventListener("input", updateInputJson);
-  updateInputJson();
+  row.addEventListener("input", updateRequestJson);
+  updateRequestJson();
 }
 
 function addScoreRow(host, value) {
@@ -193,12 +194,12 @@ function addScoreRow(host, value) {
   row.querySelector("button").addEventListener("click", () => {
     row.remove();
     updateScoreIndexes(host);
-    updateInputJson();
+    updateRequestJson();
   });
   host.insertBefore(row, host.querySelector(".mini-add"));
   updateScoreIndexes(host);
-  row.addEventListener("input", updateInputJson);
-  updateInputJson();
+  row.addEventListener("input", updateRequestJson);
+  updateRequestJson();
 }
 
 function updateScoreIndexes(host) {
@@ -274,6 +275,25 @@ function collectPayload() {
   }
 
   return { state, questions, explanationMode: explanationMode.checked };
+}
+
+function toJevRequest(payload = collectPayload()) {
+  const questions = {};
+  for (const [id, question] of Object.entries(payload.questions || {})) {
+    if (["true/false", "bool", "noul"].includes(question.type)) {
+      questions[id] = {
+        type: "noul",
+        instructions: question.instructions,
+      };
+    } else {
+      questions[id] = { ...question };
+    }
+  }
+
+  return {
+    state: payload.state || {},
+    questions,
+  };
 }
 
 function normalizeQuestionType(type) {
@@ -376,47 +396,30 @@ function applyDescriptions(node, descriptions) {
 }
 
 async function runEvaluation() {
-  updateInputJson();
+  updateRequestJson();
   statusEl.textContent = "Evaluating...";
   answersEl.className = "answers empty";
   answersEl.textContent = "Working in parallel.";
   outputJson.textContent = "{}";
+  const request = toJevRequest();
+  const payload = { ...request, explanationMode: explanationMode.checked };
 
   try {
     const response = await fetch("/api/evaluate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectPayload()),
+      body: JSON.stringify(payload),
     });
     const data = await readJsonResponse(response);
-    outputJson.textContent = JSON.stringify(compactAnswers(data.answers || {}), null, 2);
+    outputJson.textContent = JSON.stringify(data, null, 2);
     if (!response.ok) throw new Error(data.error || "Evaluation failed.");
-    statusEl.textContent = `${data.elapsed_ms} ms · ${data.parallelism} question workers`;
+    statusEl.textContent = "Evaluated.";
     renderAnswers(data.answers);
   } catch (error) {
     statusEl.textContent = "Error";
     answersEl.className = "answers";
     answersEl.innerHTML = `<div class="answer"><strong>${escapeHtml(error.message)}</strong></div>`;
   }
-}
-
-function compactAnswers(answers) {
-  const compact = {};
-  for (const [id, answer] of Object.entries(answers)) {
-    let value;
-    if (answer.type === "choice") {
-      value = answer.choice;
-    } else if (answer.type === "score") {
-      value = answer.score;
-    } else {
-      value = answer["true/false"] ?? answer.bool ?? answer.noul;
-    }
-
-    compact[id] = answer.explanation
-      ? { answer: value, explanation: answer.explanation }
-      : value;
-  }
-  return compact;
 }
 
 function renderAnswers(answers) {
@@ -464,7 +467,7 @@ function loadExample() {
   Object.entries(examples.state).forEach(([key, value]) => addStateRow(key, value));
   questionsEl.innerHTML = "";
   examples.questions.forEach((question) => addQuestion(question.type, question));
-  updateInputJson();
+  updateRequestJson();
   outputJson.textContent = "{}";
   answersEl.className = "answers empty";
   answersEl.textContent = "No results yet.";
@@ -485,7 +488,7 @@ function applyGeneratedSetup(data) {
   if (typeof data.explanationMode === "boolean") {
     explanationMode.checked = data.explanationMode;
   }
-  updateInputJson();
+  updateRequestJson();
   outputJson.textContent = "{}";
   answersEl.className = "answers empty";
   answersEl.textContent = "No results yet.";
@@ -508,9 +511,10 @@ function revertRefine() {
   statusEl.textContent = "Reverted to the previous setup.";
 }
 
-function updateInputJson() {
-  if (!inputJson) return;
-  inputJson.textContent = JSON.stringify(collectPayload(), null, 2);
+function updateRequestJson() {
+  const request = toJevRequest();
+  if (stateJson) stateJson.textContent = JSON.stringify(request.state, null, 2);
+  if (questionsJson) questionsJson.textContent = JSON.stringify(request.questions, null, 2);
 }
 
 async function copyJson(targetId, button) {
@@ -651,7 +655,7 @@ document.querySelectorAll("[data-add]").forEach((button) => {
 document.querySelector("#loadExample").addEventListener("click", loadExample);
 document.querySelector("#run").addEventListener("click", runEvaluation);
 document.querySelector("#addStateRow").addEventListener("click", () => addStateRow());
-explanationMode.addEventListener("change", updateInputJson);
+explanationMode.addEventListener("change", updateRequestJson);
 document.querySelectorAll("[data-copy]").forEach((button) => {
   button.addEventListener("click", (event) => {
     event.stopPropagation();
