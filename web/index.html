@@ -19,7 +19,32 @@
             <span>Explanation mode</span>
           </label>
           <button id="loadExample" type="button">Load example</button>
+          <button id="assistToggle" type="button">Generate</button>
+          <button id="refineToggle" type="button">Refine</button>
           <button id="run" type="button">Evaluate</button>
+        </div>
+      </section>
+
+      <section id="assistPanel" class="assist-panel" hidden>
+        <label>
+          <span>What do you want to evaluate?</span>
+          <textarea id="assistDescription" spellcheck="false" placeholder="Example: classify support tickets by urgency, owning team, refund eligibility, and customer frustration."></textarea>
+        </label>
+        <div class="assist-actions">
+          <button id="assistCancel" type="button">Cancel</button>
+          <button id="assistGenerate" type="button">Generate</button>
+        </div>
+      </section>
+
+      <section id="refinePanel" class="assist-panel" hidden>
+        <label>
+          <span>How should this setup change?</span>
+          <textarea id="refineInstruction" spellcheck="false" placeholder="Example: add a compliance question, make urgency more granular, and rename the team options for a healthcare triage workflow."></textarea>
+        </label>
+        <div class="assist-actions">
+          <button id="refineRevert" type="button" disabled>Revert</button>
+          <button id="refineCancel" type="button">Cancel</button>
+          <button id="refineGenerate" type="button">Refine</button>
         </div>
       </section>
 
@@ -57,7 +82,7 @@
                 </span>
               </span>
               <span class="action-help">
-                <button data-add="noul" type="button">+ True/False</button>
+                <button data-add="true/false" type="button">+ True/False</button>
                 <span class="help" tabindex="0" aria-label="True/False help">?
                   <span class="tooltip">True/False returns true or false for a yes/no judgment.</span>
                 </span>
@@ -72,16 +97,38 @@
             <div class="title-help">
               <h2>Answers</h2>
               <span class="help" tabindex="0" aria-label="Answers help">?
-                <span class="tooltip">Answers show the interpreted result for each question. The raw JSON panel shows only question-to-answer output.</span>
+                <span class="tooltip">Answers show interpreted results for each question. Input JSON is the request built from the current editor. Output JSON is the compact question-to-answer result after evaluation.</span>
               </span>
             </div>
             <span id="status"></span>
           </div>
           <div id="answers" class="answers empty">No results yet.</div>
-          <details class="raw">
-            <summary>Raw JSON</summary>
-            <pre id="rawJson">{}</pre>
-          </details>
+          <div class="json-panels">
+            <section class="json-panel" data-json-panel>
+              <div class="json-head">
+                <h3>Input JSON</h3>
+                <button class="copy-json" type="button" data-copy="inputJson" aria-label="Copy Input JSON" title="Copy Input JSON">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
+              <pre id="inputJson">{}</pre>
+            </section>
+            <section class="json-panel" data-json-panel>
+              <div class="json-head">
+                <h3>Output JSON</h3>
+                <button class="copy-json" type="button" data-copy="outputJson" aria-label="Copy Output JSON" title="Copy Output JSON">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
+              <pre id="outputJson">{}</pre>
+            </section>
+          </div>
         </div>
       </section>
     </main>
@@ -93,7 +140,7 @@
           <select class="qtype">
             <option value="choice">Choice</option>
             <option value="score">Score</option>
-            <option value="noul">True/False</option>
+            <option value="true/false">True/False</option>
           </select>
           <span class="help question-type-help" tabindex="0" aria-label="Category help">?</span>
           <button class="describe" type="button">Auto describe</button>

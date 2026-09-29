@@ -3,8 +3,21 @@ const template = document.querySelector("#questionTemplate");
 const stateRows = document.querySelector("#stateRows");
 const statusEl = document.querySelector("#status");
 const answersEl = document.querySelector("#answers");
-const rawJson = document.querySelector("#rawJson");
+const inputJson = document.querySelector("#inputJson");
+const outputJson = document.querySelector("#outputJson");
 const explanationMode = document.querySelector("#explanationMode");
+const assistPanel = document.querySelector("#assistPanel");
+const assistDescription = document.querySelector("#assistDescription");
+const assistToggle = document.querySelector("#assistToggle");
+const assistGenerate = document.querySelector("#assistGenerate");
+const assistCancel = document.querySelector("#assistCancel");
+const refinePanel = document.querySelector("#refinePanel");
+const refineInstruction = document.querySelector("#refineInstruction");
+const refineToggle = document.querySelector("#refineToggle");
+const refineGenerate = document.querySelector("#refineGenerate");
+const refineCancel = document.querySelector("#refineCancel");
+const refineRevert = document.querySelector("#refineRevert");
+let refineUndoPayload = null;
 
 const examples = {
   state: {
@@ -31,7 +44,7 @@ const examples = {
     },
     {
       id: "refund_eligible",
-      type: "noul",
+      type: "true/false",
       instructions: "Based on `ticket_message` and `refund_policy`, is the requested refund eligible?",
       criteria: {
         true: "The request matches the policy conditions for a refund.",
@@ -57,8 +70,13 @@ function addStateRow(key = "", value = "") {
   const valueField = row.querySelector(".state-value");
   valueField.value = value;
   wireAutoResize(valueField);
-  row.querySelector("button").addEventListener("click", () => row.remove());
+  row.addEventListener("input", updateInputJson);
+  row.querySelector("button").addEventListener("click", () => {
+    row.remove();
+    updateInputJson();
+  });
   stateRows.appendChild(row);
+  updateInputJson();
 }
 
 function addQuestion(type = "choice", data = {}) {
@@ -69,7 +87,7 @@ function addQuestion(type = "choice", data = {}) {
   const typeHelp = node.querySelector(".question-type-help");
 
   qid.value = data.id || nextId(type);
-  qtype.value = data.type || type;
+  qtype.value = normalizeQuestionType(data.type || type);
   instructions.value = data.instructions || "";
   node.dataset.type = qtype.value;
   updateTypeHelp(typeHelp, qtype.value);
@@ -78,12 +96,18 @@ function addQuestion(type = "choice", data = {}) {
     node.dataset.type = qtype.value;
     updateTypeHelp(typeHelp, qtype.value);
     renderCriteria(node, qtype.value, {});
+    updateInputJson();
   });
-  node.querySelector(".remove").addEventListener("click", () => node.remove());
+  node.addEventListener("input", updateInputJson);
+  node.querySelector(".remove").addEventListener("click", () => {
+    node.remove();
+    updateInputJson();
+  });
   node.querySelector(".describe").addEventListener("click", () => autoDescribe(node));
 
   questionsEl.appendChild(node);
   renderCriteria(node, qtype.value, data.criteria);
+  updateInputJson();
 }
 
 function updateTypeHelp(help, type) {
@@ -91,7 +115,7 @@ function updateTypeHelp(help, type) {
   const text = {
     choice: "Choice returns exactly one option key from the options you provide.",
     score: "Score returns a number on your ordered rubric, starting at 0 for the first level.",
-    noul: "True/False returns true or false for a yes/no judgment.",
+    "true/false": "True/False returns true or false for a yes/no judgment.",
   }[type];
   help.innerHTML = `?<span class="tooltip">${escapeHtml(text)}</span>`;
 }
@@ -146,8 +170,13 @@ function addChoiceRow(host, key, value, fixedKey = false) {
   const valueField = row.querySelector(".value");
   valueField.value = value;
   wireAutoResize(valueField);
-  row.querySelector("button").addEventListener("click", () => row.remove());
+  row.querySelector("button").addEventListener("click", () => {
+    row.remove();
+    updateInputJson();
+  });
   host.insertBefore(row, host.querySelector(".mini-add"));
+  row.addEventListener("input", updateInputJson);
+  updateInputJson();
 }
 
 function addScoreRow(host, value) {
@@ -164,9 +193,12 @@ function addScoreRow(host, value) {
   row.querySelector("button").addEventListener("click", () => {
     row.remove();
     updateScoreIndexes(host);
+    updateInputJson();
   });
   host.insertBefore(row, host.querySelector(".mini-add"));
   updateScoreIndexes(host);
+  row.addEventListener("input", updateInputJson);
+  updateInputJson();
 }
 
 function updateScoreIndexes(host) {
@@ -244,6 +276,14 @@ function collectPayload() {
   return { state, questions, explanationMode: explanationMode.checked };
 }
 
+function normalizeQuestionType(type) {
+  return type === "bool" || type === "noul" ? "true/false" : type;
+}
+
+function answerCssType(type) {
+  return type === "true/false" || type === "noul" ? "bool" : type;
+}
+
 function collectQuestion(node) {
   const id = node.querySelector(".qid").value.trim();
   const type = node.querySelector(".qtype").value;
@@ -297,7 +337,7 @@ async function autoDescribe(node) {
         state: collectState(),
       }),
     });
-    const data = await response.json();
+    const data = await readJsonResponse(response);
     if (!response.ok) throw new Error(data.error || "Description generation failed.");
     applyDescriptions(node, data.descriptions || {});
   } catch (error) {
@@ -336,10 +376,11 @@ function applyDescriptions(node, descriptions) {
 }
 
 async function runEvaluation() {
+  updateInputJson();
   statusEl.textContent = "Evaluating...";
   answersEl.className = "answers empty";
   answersEl.textContent = "Working in parallel.";
-  rawJson.textContent = "{}";
+  outputJson.textContent = "{}";
 
   try {
     const response = await fetch("/api/evaluate", {
@@ -347,8 +388,8 @@ async function runEvaluation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(collectPayload()),
     });
-    const data = await response.json();
-    rawJson.textContent = JSON.stringify(compactAnswers(data.answers || {}), null, 2);
+    const data = await readJsonResponse(response);
+    outputJson.textContent = JSON.stringify(compactAnswers(data.answers || {}), null, 2);
     if (!response.ok) throw new Error(data.error || "Evaluation failed.");
     statusEl.textContent = `${data.elapsed_ms} ms · ${data.parallelism} question workers`;
     renderAnswers(data.answers);
@@ -368,7 +409,7 @@ function compactAnswers(answers) {
     } else if (answer.type === "score") {
       value = answer.score;
     } else {
-      value = answer.noul;
+      value = answer["true/false"] ?? answer.bool ?? answer.noul;
     }
 
     compact[id] = answer.explanation
@@ -383,8 +424,8 @@ function renderAnswers(answers) {
   answersEl.innerHTML = "";
   for (const [id, answer] of Object.entries(answers)) {
     const card = document.createElement("article");
-    card.className = `answer answer-${answer.type}`;
-    const typeLabel = answer.type === "noul" ? "True/False" : answer.type;
+    card.className = `answer answer-${answerCssType(answer.type)}`;
+    const typeLabel = ["true/false", "bool", "noul"].includes(answer.type) ? "True/False" : answer.type;
     const promptText = formatPrompt(answer.prompt);
     card.innerHTML = `
       <div class="answer-head">
@@ -413,18 +454,181 @@ function renderSummary(answer) {
   if (answer.type === "score") {
     return `<div class="metric">Score: <strong>${fmt(answer.score)}</strong></div>`;
   }
-  return `<div class="metric">True/False: <strong>${answer.noul ? "true" : "false"}</strong></div>`;
+  return `<div class="metric">True/False: <strong>${answer["true/false"] ?? answer.bool ?? answer.noul ? "true" : "false"}</strong></div>`;
 }
 
 function loadExample() {
+  refineUndoPayload = null;
+  updateRefineRevertState();
   stateRows.innerHTML = "";
   Object.entries(examples.state).forEach(([key, value]) => addStateRow(key, value));
   questionsEl.innerHTML = "";
   examples.questions.forEach((question) => addQuestion(question.type, question));
-  rawJson.textContent = "{}";
+  updateInputJson();
+  outputJson.textContent = "{}";
   answersEl.className = "answers empty";
   answersEl.textContent = "No results yet.";
   statusEl.textContent = "";
+}
+
+function applyGeneratedSetup(data) {
+  stateRows.innerHTML = "";
+  Object.entries(data.state || {}).forEach(([key, value]) => {
+    addStateRow(key, typeof value === "string" ? value : JSON.stringify(value));
+  });
+
+  questionsEl.innerHTML = "";
+  for (const [id, question] of Object.entries(data.questions || {})) {
+    addQuestion(question.type, { id, ...question });
+  }
+
+  if (typeof data.explanationMode === "boolean") {
+    explanationMode.checked = data.explanationMode;
+  }
+  updateInputJson();
+  outputJson.textContent = "{}";
+  answersEl.className = "answers empty";
+  answersEl.textContent = "No results yet.";
+}
+
+function clonePayload(payload) {
+  return JSON.parse(JSON.stringify(payload));
+}
+
+function updateRefineRevertState() {
+  if (!refineRevert) return;
+  refineRevert.disabled = !refineUndoPayload;
+}
+
+function revertRefine() {
+  if (!refineUndoPayload) return;
+  applyGeneratedSetup(refineUndoPayload);
+  refineUndoPayload = null;
+  updateRefineRevertState();
+  statusEl.textContent = "Reverted to the previous setup.";
+}
+
+function updateInputJson() {
+  if (!inputJson) return;
+  inputJson.textContent = JSON.stringify(collectPayload(), null, 2);
+}
+
+async function copyJson(targetId, button) {
+  const target = document.querySelector(`#${targetId}`);
+  if (!target) return;
+  const text = target.textContent;
+  const originalLabel = button.getAttribute("aria-label") || "Copy JSON";
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    button.classList.add("copied");
+    button.setAttribute("aria-label", "Copied");
+    setTimeout(() => {
+      button.classList.remove("copied");
+      button.setAttribute("aria-label", originalLabel);
+    }, 1200);
+  } catch (error) {
+    statusEl.textContent = "Copy failed.";
+  }
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  const contentType = response.headers.get("Content-Type") || "";
+  if (contentType.includes("application/json")) {
+    return JSON.parse(text);
+  }
+
+  const fallback = text.trim().startsWith("<")
+    ? `Server returned HTML for ${response.url}. Make sure this app is running through python3 server.py and that the backend has this API route.`
+    : text.trim();
+  throw new Error(fallback || `Server returned ${response.status}.`);
+}
+
+async function assistMe() {
+  const description = assistDescription.value.trim();
+  if (!description) {
+    statusEl.textContent = "Describe what you want first.";
+    assistDescription.focus();
+    return;
+  }
+
+  assistGenerate.disabled = true;
+  assistToggle.disabled = true;
+  assistGenerate.textContent = "Generating...";
+  statusEl.textContent = "Generating setup...";
+
+  try {
+    const response = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description }),
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "Generation failed.");
+    refineUndoPayload = null;
+    updateRefineRevertState();
+    applyGeneratedSetup(data);
+    assistPanel.hidden = true;
+    statusEl.textContent = "Generated editable state and questions.";
+  } catch (error) {
+    statusEl.textContent = error.message;
+  } finally {
+    assistGenerate.disabled = false;
+    assistToggle.disabled = false;
+    assistGenerate.textContent = "Generate";
+  }
+}
+
+async function refineSetup() {
+  const instruction = refineInstruction.value.trim();
+  if (!instruction) {
+    statusEl.textContent = "Describe the refinement you want first.";
+    refineInstruction.focus();
+    return;
+  }
+
+  refineGenerate.disabled = true;
+  refineToggle.disabled = true;
+  refineGenerate.textContent = "Refining...";
+  statusEl.textContent = "Refining setup...";
+  const previousPayload = clonePayload(collectPayload());
+
+  try {
+    const response = await fetch("/api/refine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction,
+        current: collectPayload(),
+      }),
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok) throw new Error(data.error || "Refinement failed.");
+    refineUndoPayload = previousPayload;
+    applyGeneratedSetup(data);
+    updateRefineRevertState();
+    refinePanel.hidden = true;
+    statusEl.textContent = "Refined editable state and questions.";
+  } catch (error) {
+    statusEl.textContent = error.message;
+  } finally {
+    refineGenerate.disabled = false;
+    refineToggle.disabled = false;
+    refineGenerate.textContent = "Refine";
+  }
 }
 
 function escapeHtml(value) {
@@ -447,5 +651,36 @@ document.querySelectorAll("[data-add]").forEach((button) => {
 document.querySelector("#loadExample").addEventListener("click", loadExample);
 document.querySelector("#run").addEventListener("click", runEvaluation);
 document.querySelector("#addStateRow").addEventListener("click", () => addStateRow());
+explanationMode.addEventListener("change", updateInputJson);
+document.querySelectorAll("[data-copy]").forEach((button) => {
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    copyJson(button.dataset.copy, button);
+  });
+});
+document.querySelectorAll("[data-json-panel]").forEach((panel) => {
+  panel.addEventListener("click", () => {
+    panel.classList.toggle("open");
+  });
+});
+assistToggle.addEventListener("click", () => {
+  assistPanel.hidden = !assistPanel.hidden;
+  refinePanel.hidden = true;
+  if (!assistPanel.hidden) assistDescription.focus();
+});
+assistCancel.addEventListener("click", () => {
+  assistPanel.hidden = true;
+});
+assistGenerate.addEventListener("click", assistMe);
+refineToggle.addEventListener("click", () => {
+  refinePanel.hidden = !refinePanel.hidden;
+  assistPanel.hidden = true;
+  if (!refinePanel.hidden) refineInstruction.focus();
+});
+refineCancel.addEventListener("click", () => {
+  refinePanel.hidden = true;
+});
+refineRevert.addEventListener("click", revertRefine);
+refineGenerate.addEventListener("click", refineSetup);
 
 loadExample();

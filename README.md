@@ -1,14 +1,12 @@
-# Jev-style Typed Evaluator
+# Explanable Jev
 
-This is a small local implementation inspired by TypeSafe Jev. It lets a user submit one `state` and several typed questions, then returns constrained answers:
+A small local evaluator inspired by TypeSafe Jev. It lets you define shared `state`, ask several typed questions against that state, and returns constrained answers: `choice`, `score`, or `true/false`.
 
-- `choice`: `choice`
-- `score`: `score`, `legend`
-- `true/false`: `true` or `false`
+![Overview of the Jev-style typed evaluator UI](Overview.png)
 
 Inspiration: [Introducing System One Models and Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev).
 
-It uses OpenAI `gpt-5-mini` by default, but the model is isolated behind `llm.py` so you can use any LLM provider.
+The default LLM adapter uses OpenAI `gpt-5-mini`, but model access is isolated behind `llm.py` so you can swap in another provider.
 
 ## Run
 
@@ -22,7 +20,7 @@ Open:
 http://127.0.0.1:8000
 ```
 
-The app reads `OPENAI_API_KEY` from `.env`. You can optionally set:
+The app reads `OPENAI_API_KEY` from `.env` or the environment. Optional settings:
 
 ```env
 OPENAI_MODEL=gpt-5-mini
@@ -30,119 +28,130 @@ OPENAI_REASONING_EFFORT=minimal
 PORT=8000
 ```
 
-`OPENAI_REASONING_EFFORT` is passed to OpenAI's Responses API as `reasoning.effort`. For `gpt-5-mini`, `minimal` is the fast low-thinking setting. If you switch to a model that supports `none`, set `OPENAI_REASONING_EFFORT=none`.
-
-## Swapping the LLM
-
-Edit `llm.py` and keep this function signature:
-
-```python
-def llm(system_prompt: str, user_prompt: str) -> str:
-    return "..."
-```
-
-The returned string can be any text. `server.py` handles interpretation, post-processing, and retry/repair if the first answer cannot be parsed into the required typed shape. For example, to route through a local model, replace the body of `llm` with your local client call and return the model's raw text.
-
-The initial LLM prompt is intentionally short:
-
-- Choice asks for one option token like `a`, `b`, or `c`
-- Score asks for one score token like `0`, `1`, or `2`
-- True/False asks for `t` or `f`
-- Explanation mode adds one short reason; turning it off removes that request
-
-The LLM is not asked for probability distributions, and the API does not return probability or confidence fields.
-
-The LLM is also not asked to return JSON. The server first tries to interpret a plain answer like `a`, `1`, or `t`. If interpretation fails, it retries with another plain-answer prompt instead of requesting JSON.
-
-Evaluation prompts are compact plain text, not JSON. For example:
-
-```text
-State:
-ticket: refund duplicate
-
-Q: Which team?
-Answer this MCQ with exactly one option token. Options: a) billing: payments; b) returns: exchanges. Return token only.
-```
+`OPENAI_REASONING_EFFORT` is passed to OpenAI's Responses API as `reasoning.effort`.
 
 ## UI Workflow
 
-The browser UI keeps `state` as a key-value table. Add fields like:
+The browser UI has two main panes:
 
-- `ticket_message`: customer text
-- `refund_policy`: policy text
-- `account_tier`: plan name
+- **State**: key-value fields that every question can reference, such as `ticket_message`, `refund_policy`, `movie_review`, or `review_metadata`.
+- **Questions**: typed judgments against that state. The supported question types are Choice, Score, and True/False.
+- **Answers**: normalized typed outputs, optional explanations, and collapsed Input/Output JSON blocks with copy controls.
 
-Each row becomes one key under the `state` object sent to the server.
+Use **Generate** to describe the evaluator you want in a sentence or two. The app asks the configured LLM to generate editable state fields and 3 to 5 typed questions.
 
-For questions, enter the question you want answered and the option keys or score levels. Use **Auto describe** to ask the configured LLM to fill in short descriptions for the options. The descriptions remain editable before evaluation.
+![Generate workflow for creating state and questions](generate.png)
+
+Use **Refine** to change the current setup with a short instruction. The app sends the current state and questions to the LLM, applies the requested refinement, validates the result, and reloads it into the editable UI. After a successful refinement, **Revert** restores the previous setup if you do not like the change.
+
+![Refine workflow with revert support](refine.png)
+
+Use **Auto describe** on an individual question to fill in concise option or rubric descriptions.
+
+Generated and refined setups follow two extra rules:
+
+- Generated state keys may use any name except `input_text` and `input`.
+- Every generated/refined question instruction must explicitly refer to at least one state key, preferably with backticks, such as `` `ticket_message` ``.
 
 ## Request Shape
 
-The browser builds a request from the key-value state table and the question cards. Conceptually, it sends:
+The browser builds requests from the editable state table and question cards. Conceptually, `/api/evaluate` receives:
 
 ```json
 {
   "state": {
-    "ticket_message": "I was charged twice. Please refund the duplicate."
+    "ticket_message": "I was charged twice. Please refund the duplicate.",
+    "refund_policy": "Duplicate charges are eligible for refund after verification."
   },
   "explanationMode": true,
   "questions": {
     "refund_requested": {
       "type": "true/false",
-      "instructions": "Does `ticket_message` request a refund?"
+      "instructions": "Does `ticket_message` request a refund?",
+      "criteria": {
+        "true": "The message asks for money back or reversal.",
+        "false": "The message does not ask for a refund."
+      }
     },
     "department": {
       "type": "choice",
       "instructions": "Which team should handle `ticket_message`?",
       "criteria": {
-        "billing": "Payments, invoicing, refunds",
-        "technical": "Bugs, outages, integrations",
-        "sales": "Pricing, upgrades, new accounts"
+        "billing": "Payments, invoices, refunds, or duplicate charges.",
+        "technical": "Bugs, outages, errors, or integrations.",
+        "returns": "Exchanges, damaged items, or wrong items."
       }
     },
     "frustration": {
       "type": "score",
-      "instructions": "How frustrated is the customer?",
+      "instructions": "How frustrated is the customer in `ticket_message`?",
       "criteria": ["Calm", "Frustrated", "Very angry"]
     }
   }
 }
 ```
 
-The UI labels the boolean question type as `true/false`.
+## Output Shape
 
-With explanation mode enabled, every displayed answer also includes:
+Each question is evaluated independently and normalized into a predictable typed answer:
 
-```json
-{
-  "explanation": "Short reason for the judgment."
-}
-```
+- `choice`: returns one declared option key.
+- `score`: returns a number clamped to the declared score range, plus a legend.
+- `true/false`: returns `true` or `false`.
 
-The Raw JSON panel in the UI shows only a compact question-to-answer object. It omits model name, elapsed time, parallelism, prompt metadata, types, and options:
+The Answers pane includes two collapsed, copyable JSON blocks. Click a block to expand or collapse it, or use the clipboard icon in the top-right of the block to copy its JSON:
 
-```json
-{
-  "refund_requested": true,
-  "department": "billing",
-  "frustration": 1
-}
-```
+- **Input JSON**: the exact request payload assembled from the current editor. It is available before evaluation and updates as you edit.
+- **Output JSON**: the compact question-to-answer result after evaluation.
 
-When explanation mode is enabled, each value becomes an object:
+With explanation mode enabled, answers also include a short explanation. Output JSON looks like:
 
 ```json
 {
+  "refund_requested": {
+    "answer": true,
+    "explanation": "The customer explicitly asks to refund the duplicate charge."
+  },
   "department": {
     "answer": "billing",
-    "explanation": "duplicate charge and refund issue"
+    "explanation": "The ticket is about duplicate payment and refund handling."
+  },
+  "frustration": {
+    "answer": 1,
+    "explanation": "The customer is concerned but not abusive."
   }
 }
 ```
 
+## Generation Endpoints
+
+`/api/generate` powers the **Generate** button:
+
+```json
+{
+  "description": "Classify support tickets by urgency, team, and refund eligibility."
+}
+```
+
+`/api/refine` powers the **Refine** button:
+
+```json
+{
+  "instruction": "Add a compliance question and make urgency a 5-point score.",
+  "current": {
+    "state": {},
+    "questions": {}
+  }
+}
+```
+
+Both endpoints ask the LLM for JSON containing `state` and `questions`, then validate the result before returning it to the browser.
+
+If generated JSON is invalid or fails validation, the server sends the failed output and exact validation error back to the LLM for repair, up to 3 total attempts.
+
 ## Description Generation
 
-The UI calls `/api/describe` with a question type, question text, option keys, and current state. The endpoint asks the LLM for plain-text lines:
+`/api/describe` fills in option descriptions for one existing question. It receives a question type, question text, option keys, and current state, then asks the LLM for plain-text lines:
 
 ```text
 billing: Payments, duplicate charges, invoices, and refunds.
@@ -151,14 +160,32 @@ returns: Exchanges, wrong sizes, damaged items, and returns.
 
 The server parses those lines and writes them back into the criteria fields.
 
-## Evaluation
+## Evaluation Behavior
 
-Each question is evaluated independently. Each question is exactly one LLM call, and separate questions can run at the same time.
+Evaluation prompts are intentionally compact plain text, not JSON. For example:
 
-The server then normalizes outputs in code:
+```text
+State:
+ticket_message: refund duplicate
 
-- raw LLM text is interpreted into the requested typed output shape
-- failed interpretation is retried with a short plain-answer prompt
-- answers are clamped to the declared type and allowed range
+Q: Which team should handle `ticket_message`?
+Answer this MCQ with exactly one option token. Options: a) billing: payments; b) returns: exchanges. Return token only.
+```
 
-This keeps downstream code working with predictable typed shapes even if the underlying LLM is imperfect.
+The LLM is not asked for probabilities or confidence scores. The server:
+
+- interprets plain answers like `a`, `1`, or `t`
+- retries with a short repair prompt if the answer cannot be parsed
+- clamps answers to the declared type and allowed range
+- runs separate questions in parallel
+
+## Swapping The LLM
+
+Edit `llm.py` and keep this function signature:
+
+```python
+def llm(system_prompt: str, user_prompt: str) -> str:
+    return "..."
+```
+
+The rest of the app only expects a string response. `server.py` handles interpretation, validation, post-processing, and retries.

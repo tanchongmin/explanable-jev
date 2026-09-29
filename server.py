@@ -18,6 +18,7 @@ ROOT = Path(__file__).parent
 WEB_ROOT = ROOT / "web"
 MAX_WORKERS = max(2, min(16, (os.cpu_count() or 4) * 2))
 MAX_INTERPRET_ATTEMPTS = 3
+MAX_GENERATION_ATTEMPTS = 3
 
 
 class ValidationError(ValueError):
@@ -46,7 +47,7 @@ def choice_tokens(options: list[str]) -> dict[str, str]:
 
 
 def answer_contract(question: dict[str, Any], explanation_mode: bool) -> str:
-    q_type = question["type"]
+    q_type = canonical_question_type(question["type"])
     explanation = " Format: token - reason." if explanation_mode else " Return token only."
 
     if q_type == "choice":
@@ -95,7 +96,7 @@ def interpret_plain_text(
         answer_text = first_line
 
     result: dict[str, Any]
-    q_type = question["type"]
+    q_type = canonical_question_type(question["type"])
     if q_type == "choice":
         options = list(question["criteria"].keys())
         token_map = choice_tokens(options)
@@ -128,17 +129,17 @@ def interpret_plain_text(
     else:
         normalized = answer_text.strip().strip("\"`.,").lower()
         if normalized == "t" or re.search(r"\byes\b|\btrue\b", answer_text, re.I):
-            result = {"noul": True}
+            result = {"true/false": True}
         elif normalized == "f" or re.search(r"\bno\b|\bfalse\b", answer_text, re.I):
-            result = {"noul": False}
+            result = {"true/false": False}
         elif re.match(r"^\s*t\b", text, re.I):
-            result = {"noul": True}
+            result = {"true/false": True}
         elif re.match(r"^\s*f\b", text, re.I):
-            result = {"noul": False}
+            result = {"true/false": False}
         elif re.search(r"\byes\b|\btrue\b", text, re.I):
-            result = {"noul": True}
+            result = {"true/false": True}
         elif re.search(r"\bno\b|\bfalse\b", text, re.I):
-            result = {"noul": False}
+            result = {"true/false": False}
         else:
             return None
 
@@ -201,6 +202,10 @@ def validate_text_json(value: Any, path: str = "state") -> None:
     raise ValidationError(f"{path} must contain only strings, objects, and arrays.")
 
 
+def canonical_question_type(q_type: Any) -> Any:
+    return "true/false" if q_type in {"bool", "noul"} else q_type
+
+
 def validate_question(question_id: str, question: Any) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", question_id):
         raise ValidationError(
@@ -211,7 +216,10 @@ def validate_question(question_id: str, question: Any) -> dict[str, Any]:
     if not isinstance(question.get("instructions"), (str, dict, list)):
         raise ValidationError(f"Question '{question_id}' needs instructions.")
 
-    q_type = question.get("type")
+    q_type = canonical_question_type(question.get("type"))
+    if q_type != question.get("type"):
+        question = dict(question)
+        question["type"] = q_type
     if q_type == "choice":
         criteria = question.get("criteria")
         if not isinstance(criteria, dict) or len(criteria) < 2:
@@ -230,7 +238,7 @@ def validate_question(question_id: str, question: Any) -> dict[str, Any]:
         for index, level in enumerate(criteria):
             if not isinstance(level, (str, dict, list)):
                 raise ValidationError(f"Score '{question_id}' level {index} has invalid criteria.")
-    elif q_type == "noul":
+    elif q_type == "true/false":
         criteria = question.get("criteria")
         if criteria is not None:
             if not isinstance(criteria, dict):
@@ -239,7 +247,7 @@ def validate_question(question_id: str, question: Any) -> dict[str, Any]:
                 if key not in {"true", "false"}:
                     raise ValidationError(f"True/False '{question_id}' criteria only supports true/false.")
     else:
-        raise ValidationError(f"Question '{question_id}' type must be choice, score, or noul.")
+        raise ValidationError(f"Question '{question_id}' type must be choice, score, or true/false.")
 
     return question
 
@@ -257,7 +265,7 @@ def prompt_for_question(
 
 
 def build_answer(question: dict[str, Any], raw: dict[str, Any], explanation_mode: bool) -> dict[str, Any]:
-    q_type = question["type"]
+    q_type = canonical_question_type(question["type"])
 
     if q_type == "choice":
         options = list(question["criteria"].keys())
@@ -281,14 +289,14 @@ def build_answer(question: dict[str, Any], raw: dict[str, Any], explanation_mode
             "legend": {str(index): value for index, value in enumerate(question["criteria"])},
         }
     else:
-        value = raw.get("noul", False)
+        value = raw.get("true/false", raw.get("bool", raw.get("noul", False)))
         if isinstance(value, bool):
-            noul = value
+            bool_value = value
         elif isinstance(value, (int, float)):
-            noul = value >= 0.5
+            bool_value = value >= 0.5
         else:
-            noul = str(value).strip().lower() in {"true", "yes", "1"}
-        answer = {"type": "noul", "noul": noul}
+            bool_value = str(value).strip().lower() in {"true", "yes", "1"}
+        answer = {"type": "true/false", "true/false": bool_value}
 
     if explanation_mode:
         explanation = raw.get("explanation")
@@ -372,16 +380,16 @@ def parse_description_lines(raw: str, keys: list[str]) -> dict[str, str]:
 
 
 def describe_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    q_type = payload.get("type")
+    q_type = canonical_question_type(payload.get("type"))
     instructions = payload.get("instructions")
     options = payload.get("options")
 
-    if q_type not in {"choice", "score", "noul"}:
-        raise ValidationError("type must be choice, score, or noul.")
+    if q_type not in {"choice", "score", "true/false"}:
+        raise ValidationError("type must be choice, score, or true/false.")
     if not isinstance(instructions, str) or not instructions.strip():
         raise ValidationError("instructions is required.")
 
-    if q_type == "noul":
+    if q_type == "true/false":
         keys = ["true", "false"]
     else:
         if not isinstance(options, list):
@@ -411,6 +419,255 @@ def describe_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {"descriptions": parse_description_lines(raw_output, keys)}
 
 
+def normalize_assist_questions(raw_questions: Any) -> dict[str, Any]:
+    if isinstance(raw_questions, list):
+        questions = {}
+        for index, question in enumerate(raw_questions, start=1):
+            if not isinstance(question, dict):
+                raise ValidationError("Generated questions must be objects.")
+            question = dict(question)
+            question_id = str(question.pop("id", "")).strip() or f"question_{index}"
+            questions[question_id] = question
+        return questions
+    if isinstance(raw_questions, dict):
+        return raw_questions
+    raise ValidationError("Generated questions must be an object or list.")
+
+
+def normalize_generated_score_criteria(question: dict[str, Any]) -> dict[str, Any]:
+    if canonical_question_type(question.get("type")) != "score":
+        return question
+
+    normalized = dict(question)
+    normalized["type"] = "score"
+    criteria = normalized.get("criteria")
+    if isinstance(criteria, dict):
+        levels = [value for value in criteria.values() if value not in (None, "")]
+    elif isinstance(criteria, list):
+        levels = [value for value in criteria if value not in (None, "")]
+    elif isinstance(criteria, str) and criteria.strip():
+        levels = [criteria.strip()]
+    else:
+        levels = []
+
+    if len(levels) == 1:
+        level = str(levels[0]).strip()
+        levels = [
+            f"Low or no evidence of: {level}",
+            level,
+        ]
+    elif not levels:
+        instructions = normalized.get("instructions", "the requested judgment")
+        levels = [
+            f"Low or no evidence for {instructions}.",
+            f"Clear evidence for {instructions}.",
+        ]
+
+    normalized["criteria"] = levels[:10]
+    return normalized
+
+
+def normalize_generated_questions(raw_questions: Any) -> dict[str, Any]:
+    normalized = {}
+    for question_id, question in normalize_assist_questions(raw_questions).items():
+        if isinstance(question, dict) and question.get("type") in {"bool", "noul"}:
+            question = {**question, "type": "true/false"}
+        normalized[question_id] = normalize_generated_score_criteria(question)
+    return normalized
+
+
+def validate_generated_state_keys(state: Any) -> dict[str, Any]:
+    if not isinstance(state, dict) or not state:
+        raise ValidationError("Generated state must be a non-empty object.")
+
+    disallowed_keys = {"input", "input_text"}
+    for key in state:
+        normalized = key.strip().lower()
+        if normalized in disallowed_keys:
+            raise ValidationError(
+                f"Generated state key '{key}' is not allowed. Use a more specific state key."
+            )
+    validate_text_json(state)
+    return state
+
+
+def instruction_mentions_state_key(instructions: Any, state_keys: list[str]) -> bool:
+    instruction_text = json.dumps(instructions, ensure_ascii=False) if not isinstance(instructions, str) else instructions
+    return any(
+        re.search(rf"(?<![A-Za-z0-9_-])`?{re.escape(key)}`?(?![A-Za-z0-9_-])", instruction_text)
+        for key in state_keys
+    )
+
+
+def validate_generated_questions(questions: Any, state: dict[str, Any]) -> dict[str, Any]:
+    state_keys = list(state.keys())
+    validated = {
+        question_id: validate_question(question_id, question)
+        for question_id, question in normalize_generated_questions(questions).items()
+    }
+    if not validated:
+        raise ValidationError("Generated setup needs at least one question.")
+    for question_id, question in validated.items():
+        if not instruction_mentions_state_key(question.get("instructions", ""), state_keys):
+            raise ValidationError(
+                f"Generated question '{question_id}' must refer to at least one state key: {', '.join(state_keys)}."
+            )
+    return validated
+
+
+def validate_generated_setup(generated: dict[str, Any]) -> dict[str, Any]:
+    state = validate_generated_state_keys(generated.get("state"))
+    questions = validate_generated_questions(generated.get("questions"), state)
+    return {"state": state, "questions": questions}
+
+
+def generation_repair_prompt(original_user_prompt: str, raw_output: str, error: Exception) -> str:
+    return json.dumps(
+        {
+            "task": "Repair the previous typed evaluator setup. Return corrected JSON only.",
+            "validation_error": str(error),
+            "failed_output": raw_output,
+            "original_request": json.loads(original_user_prompt),
+            "requirements": [
+                "Return one JSON object with state and questions.",
+                "state keys must not be input_text or input.",
+                "Each question instruction must explicitly refer to at least one returned state key.",
+                "choice criteria must be an object with at least 2 options.",
+                "score criteria must be a JSON array with 2 to 10 ordered string levels; never return a single score level.",
+                "true/false criteria may contain true and false descriptions.",
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def generate_valid_setup(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    current_user_prompt = user_prompt
+    last_error: Exception | None = None
+    raw_output = ""
+
+    for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
+        raw_output = llm(system_prompt, current_user_prompt)
+        try:
+            generated = parse_json_object(raw_output)
+            return validate_generated_setup(generated)
+        except Exception as exc:
+            last_error = exc
+            if attempt == MAX_GENERATION_ATTEMPTS:
+                break
+            current_user_prompt = generation_repair_prompt(user_prompt, raw_output, exc)
+
+    raise ValidationError(
+        f"Could not generate a valid setup after {MAX_GENERATION_ATTEMPTS} attempts: {last_error}"
+    )
+
+
+def generate_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    description = payload.get("description")
+    if not isinstance(description, str) or not description.strip():
+        raise ValidationError("description is required.")
+    if len(description) > 2000:
+        raise ValidationError("description must be 2000 characters or fewer.")
+
+    system_prompt = (
+        "Design a typed evaluator setup for a small UI. Return JSON only. "
+        "The JSON object must contain state and questions. "
+        "state must be an object of editable string fields with realistic placeholder values. "
+        "Use state keys such as ticket_message, refund_policy, loan_application, or patient_note. "
+        "Do not use input_text or input as state keys. "
+        "questions must be an object keyed by concise snake_case ids. "
+        "Every question instruction must explicitly refer to at least one state key, preferably in backticks. "
+        "Each question must use type choice, score, or true/false. "
+        "Choice criteria must be an object with 2 to 6 option keys and short descriptions. "
+        "Score criteria must be a JSON array with 2 to 6 ordered level descriptions; never create a score question with only one level. "
+        "Bool criteria may define true and false descriptions. "
+        "Create 3 to 5 useful questions."
+    )
+    user_prompt = json.dumps(
+        {
+            "description": description.strip(),
+            "example_shape": {
+                "state": {
+                    "customer_ticket": "Paste the customer ticket to evaluate here.",
+                    "refund_policy": "Paste the relevant refund policy here.",
+                },
+                "questions": {
+                    "support_category": {
+                        "type": "choice",
+                        "instructions": "Which category best fits `customer_ticket`?",
+                        "criteria": {
+                            "billing": "Payments, invoices, refunds, or charges.",
+                            "technical": "Bugs, errors, outages, or integrations.",
+                        },
+                    },
+                    "urgency": {
+                        "type": "score",
+                        "instructions": "How urgent is `customer_ticket`?",
+                        "criteria": ["Low urgency.", "Moderate urgency.", "High urgency."],
+                    },
+                    "refund_policy_match": {
+                        "type": "true/false",
+                        "instructions": "Does `customer_ticket` satisfy `refund_policy`?",
+                        "criteria": {
+                            "true": "The state matches the policy.",
+                            "false": "The state does not match the policy.",
+                        },
+                    },
+                },
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    return generate_valid_setup(system_prompt, user_prompt)
+
+
+def refine_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    instruction = payload.get("instruction")
+    current = payload.get("current")
+    if not isinstance(instruction, str) or not instruction.strip():
+        raise ValidationError("instruction is required.")
+    if len(instruction) > 2000:
+        raise ValidationError("instruction must be 2000 characters or fewer.")
+    if not isinstance(current, dict):
+        raise ValidationError("current setup is required.")
+
+    state = current.get("state", {})
+    questions = current.get("questions", {})
+    if not isinstance(state, dict):
+        raise ValidationError("current.state must be an object.")
+    if not isinstance(questions, dict):
+        raise ValidationError("current.questions must be an object.")
+    validate_text_json(state)
+
+    system_prompt = (
+        "Refine a typed evaluator setup for a small UI. Return JSON only. "
+        "Preserve useful existing fields and questions unless the user asks to change them. "
+        "The JSON object must contain state and questions. "
+        "state must be an object of editable string fields. "
+        "Use state keys such as ticket_message, refund_policy, loan_application, or patient_note; replace input_text or input. "
+        "questions must be an object keyed by concise snake_case ids. "
+        "Every question instruction must explicitly refer to at least one returned state key, preferably in backticks. "
+        "Each question must use type choice, score, or true/false. "
+        "Choice criteria must be an object with 2 to 8 option keys and short descriptions. "
+        "Score criteria must be a JSON array with 2 to 8 ordered level descriptions; never create a score question with only one level. "
+        "True/false criteria may define true and false descriptions. "
+        "Make the refined setup coherent and ready to evaluate."
+    )
+    user_prompt = json.dumps(
+        {
+            "instruction": instruction.strip(),
+            "current_setup": {
+                "state": state,
+                "questions": questions,
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    return generate_valid_setup(system_prompt, user_prompt)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(WEB_ROOT), **kwargs)
@@ -423,7 +680,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path not in {"/api/evaluate", "/api/describe"}:
+        if path not in {"/api/evaluate", "/api/describe", "/api/generate", "/api/assist", "/api/refine"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
@@ -432,7 +689,14 @@ class Handler(SimpleHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValidationError("Request body must be an object.")
-            result = evaluate_payload(payload) if path == "/api/evaluate" else describe_payload(payload)
+            if path == "/api/evaluate":
+                result = evaluate_payload(payload)
+            elif path == "/api/describe":
+                result = describe_payload(payload)
+            elif path in {"/api/generate", "/api/assist"}:
+                result = generate_payload(payload)
+            else:
+                result = refine_payload(payload)
             self.respond_json(result)
         except ValidationError as exc:
             self.respond_json({"error": str(exc)}, HTTPStatus.UNPROCESSABLE_ENTITY)
